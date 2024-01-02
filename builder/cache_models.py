@@ -1,6 +1,7 @@
 # builder/model_fetcher.py
 
 import torch
+from diffusers import StableDiffusionLatentUpscalePipeline
 from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline, AutoencoderKL
 
 
@@ -32,14 +33,21 @@ def get_diffusion_pipelines():
 
     pipe = fetch_pretrained_model(StableDiffusionXLPipeline,
                                   "stabilityai/stable-diffusion-xl-base-1.0", **common_args)
+    print("Loaded base")
     vae = fetch_pretrained_model(
         AutoencoderKL, "madebyollin/sdxl-vae-fp16-fix", **{"torch_dtype": torch.float16}
     )
     print("Loaded VAE")
     refiner = fetch_pretrained_model(StableDiffusionXLImg2ImgPipeline,
                                      "stabilityai/stable-diffusion-xl-refiner-1.0", **common_args)
+    print("Loaded refiner")
+    upscaler = fetch_pretrained_model(StableDiffusionLatentUpscalePipeline,
+                                      "stabilityai/sd-x2-latent-upscaler", **{"torch_dtype": torch.float16,
+                                                                              "use_safetensors": True
+                                                                              })
+    print("Loaded upscaler")
 
-    return pipe, refiner, vae
+    return pipe, refiner, vae, upscaler
 
 
 if __name__ == "__main__":
