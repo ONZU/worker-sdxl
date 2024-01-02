@@ -38,10 +38,20 @@ INPUT_SCHEMA = {
         'required': False,
         'default': 50
     },
+    'upscaler_inference_steps': {
+        'type': int,
+        'required': False,
+        'default': 20
+    },
     'guidance_scale': {
         'type': float,
         'required': False,
         'default': 7.5
+    },
+    'upscaler_guidance_scale': {
+        'type': float,
+        'required': False,
+        'default': 0.
     },
     'strength': {
         'type': float,

@@ -2,14 +2,12 @@
 Contains the handler function that will be called by the serverless.
 '''
 
-import os
 import base64
 import concurrent.futures
+import os
 
+import runpod
 import torch
-from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline, AutoencoderKL
-from diffusers.utils import load_image
-
 from diffusers import (
     PNDMScheduler,
     LMSDiscreteScheduler,
@@ -17,14 +15,16 @@ from diffusers import (
     EulerDiscreteScheduler,
     DPMSolverMultistepScheduler,
 )
-
-import runpod
+from diffusers import StableDiffusionLatentUpscalePipeline
+from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline, AutoencoderKL
+from diffusers.utils import load_image
 from runpod.serverless.utils import rp_upload, rp_cleanup
 from runpod.serverless.utils.rp_validator import validate
 
 from rp_schemas import INPUT_SCHEMA
 
 torch.cuda.empty_cache()
+
 
 # ------------------------------- Model Handler ------------------------------ #
 
@@ -33,6 +33,7 @@ class ModelHandler:
     def __init__(self):
         self.base = None
         self.refiner = None
+        self.upscaler = None
         self.load_models()
 
     def load_base(self):
@@ -57,16 +58,28 @@ class ModelHandler:
         refiner_pipe.enable_xformers_memory_efficient_attention()
         return refiner_pipe
 
+    @staticmethod
+    def load_upscaler() -> StableDiffusionLatentUpscalePipeline:
+        upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler",
+                                                                        torch_dtype=torch.float16,
+                                                                        use_safetensors=True)
+        upscaler = upscaler.to("cuda", silence_dtype_warnings=True)
+        upscaler.enable_xformers_memory_efficient_attention()
+        return upscaler
+
     def load_models(self):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_base = executor.submit(self.load_base)
             future_refiner = executor.submit(self.load_refiner)
+            future_upscaler = executor.submit(self.load_upscaler)
 
             self.base = future_base.result()
             self.refiner = future_refiner.result()
+            self.upscaler = future_upscaler.result()
 
 
 MODELS = ModelHandler()
+
 
 # ---------------------------------- Helper ---------------------------------- #
 
@@ -163,6 +176,14 @@ def generate_image(job):
                 "error": f"RuntimeError: {err}, Stack Trace: {err.__traceback__}",
                 "refresh_worker": True
             }
+
+    output = MODELS.upscaler(
+        prompt=job_input['prompt'],
+        image=output,
+        num_inference_steps=job_input['upscaler_inference_steps'],
+        guidance_scale=job_input['upscaler_guidance_scale'],
+        generator=generator
+    ).images
 
     image_urls = _save_and_upload_images(output, job['id'])
 
