@@ -2,11 +2,12 @@
 Contains the handler function that will be called by the serverless.
 '''
 
-import concurrent.futures
+from argparse import ArgumentParser
+from pathlib import Path
+from typing import Tuple
 
-import matplotlib.pyplot as plt
-from diffusers.configuration_utils import FrozenDict
 import numpy as np
+import pandas as pd
 import torch
 from PIL import Image
 from diffusers import (
@@ -18,11 +19,7 @@ from diffusers import (
 )
 from diffusers import StableDiffusionLatentUpscalePipeline
 from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline, AutoencoderKL
-
-torch.cuda.empty_cache()
-
-
-# ------------------------------- Model Handler ------------------------------ #
+from diffusers.configuration_utils import FrozenDict
 
 
 class ModelHandler:
@@ -36,12 +33,12 @@ class ModelHandler:
     def load_base() -> StableDiffusionXLPipeline:
         vae = AutoencoderKL.from_pretrained(
             "madebyollin/sdxl-vae-fp16-fix",
-            torch_dtype=torch.float16
+            torch_dtype=torch.float16, local_files_only=True
         )
         base_pipe = StableDiffusionXLPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", vae=vae,
             torch_dtype=torch.float16, variant="fp16",
-            use_safetensors=True, add_watermarker=False
+            use_safetensors=True, add_watermarker=False, local_files_only=True
         )
         base_pipe = base_pipe.to("cuda", silence_dtype_warnings=True)
         base_pipe.enable_xformers_memory_efficient_attention()
@@ -51,12 +48,12 @@ class ModelHandler:
     def load_refiner() -> StableDiffusionXLImg2ImgPipeline:
         vae = AutoencoderKL.from_pretrained(
             "madebyollin/sdxl-vae-fp16-fix",
-            torch_dtype=torch.float16
+            torch_dtype=torch.float16, local_files_only=True
         )
         refiner_pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-refiner-1.0", vae=vae,
             torch_dtype=torch.float16, variant="fp16",
-            use_safetensors=True, add_watermarker=False
+            use_safetensors=True, add_watermarker=False, local_files_only=True
         )
         refiner_pipe = refiner_pipe.to("cuda", silence_dtype_warnings=True)
         refiner_pipe.enable_xformers_memory_efficient_attention()
@@ -66,26 +63,15 @@ class ModelHandler:
     def load_upscaler() -> StableDiffusionLatentUpscalePipeline:
         upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler",
                                                                         torch_dtype=torch.float16,
-                                                                        use_safetensors=True)
+                                                                        use_safetensors=True, local_files_only=True)
         upscaler = upscaler.to("cuda", silence_dtype_warnings=True)
         upscaler.enable_xformers_memory_efficient_attention()
         return upscaler
 
     def load_models(self) -> None:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_base = executor.submit(self.load_base)
-            future_refiner = executor.submit(self.load_refiner)
-            future_upscaler = executor.submit(self.load_upscaler)
-
-            self.base = future_base.result()
-            self.refiner = future_refiner.result()
-            self.upscaler = future_upscaler.result()
-
-
-MODELS = ModelHandler()
-
-
-# ---------------------------------- Helper ---------------------------------- #
+        self.base = self.load_base()
+        self.refiner = self.load_refiner()
+        self.upscaler = self.load_upscaler()
 
 
 def make_scheduler(name: str, config: FrozenDict) -> object:
@@ -99,18 +85,16 @@ def make_scheduler(name: str, config: FrozenDict) -> object:
 
 
 @torch.inference_mode()
-def generate_image(seed: int = 42, scheduler: str = "DDIM", **kwargs) -> Image:
+def generate_image(pos_prompt: str, neg_prompt: str, seed: int, model_handler: ModelHandler,
+                   resolution: Tuple[int, int] = (1024, 1024)) -> Image:
     generator = torch.Generator("cuda").manual_seed(seed)
 
-    MODELS.base.scheduler = make_scheduler(
-        scheduler, MODELS.base.scheduler.config)
-
     # Generate latent image using pipe
-    image = MODELS.base(
-        prompt='astronaut riding a dinosaur',
-        negative_prompt=None,
-        height=1024,
-        width=1024,
+    image = model_handler.base(
+        prompt=pos_prompt,
+        negative_prompt=neg_prompt,
+        height=resolution[0],
+        width=resolution[1],
         num_inference_steps=25,
         guidance_scale=7.5,
         denoising_end=None,
@@ -119,8 +103,9 @@ def generate_image(seed: int = 42, scheduler: str = "DDIM", **kwargs) -> Image:
         generator=generator
     ).images
 
-    output = MODELS.refiner(
-        prompt='astronaut riding a dinosaur',
+    output = model_handler.refiner(
+        prompt=pos_prompt,
+        negative_prompt=neg_prompt,
         num_inference_steps=50,
         strength=0.3,
         image=image,
@@ -128,22 +113,46 @@ def generate_image(seed: int = 42, scheduler: str = "DDIM", **kwargs) -> Image:
         generator=generator
     ).images[0]
 
-    plt.imshow(np.array(output))
-    plt.show()
-
-    output = MODELS.upscaler(
-        prompt='astronaut riding a dinosaur',
+    output = model_handler.upscaler(
+        prompt=pos_prompt,
+        negative_prompt=neg_prompt,
         image=output,
         num_inference_steps=20,
         guidance_scale=0.,
         generator=generator
     ).images[0]
 
-    plt.imshow(np.array(output))
-    plt.show()
-
     return output
 
 
+def process_prompts(df_path: Path) -> None:
+    torch.cuda.empty_cache()
+    model_handler = ModelHandler()
+    model_handler.base.scheduler = make_scheduler(
+        'DDIM', model_handler.base.scheduler.config)
+
+    prompts_df = pd.read_csv(df_path)
+    out_dir = Path('output')
+    out_dir.mkdir(exist_ok=True)
+
+    for i, row in prompts_df.iterrows():
+        print(f'Processing row {i}')
+        pos_prompt = row['positive_prompt']
+        neg_prompt = row['negative_prompt']
+        topic = row['topic']
+        subtopic = row['subtopic']
+        variant = row['variant']
+        style = row['style']
+        img_base_name = f'{topic}_{subtopic}_{variant}_{style}'
+        for seed in np.random.randint(0, 1000, size=3, dtype=np.int32):
+            img = generate_image(pos_prompt, neg_prompt, int(seed), model_handler, (1024, 576))
+            img_name = f'{img_base_name}_{seed}.png'
+            img.save(out_dir / img_name)
+
+
 if __name__ == "__main__":
-    generate_image()
+    parser = ArgumentParser()
+    parser.add_argument("--df_path", type=Path, required=True)
+    args = parser.parse_args()
+
+    process_prompts(args.df_path)
