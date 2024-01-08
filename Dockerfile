@@ -10,6 +10,7 @@ RUN python3.11 -m pip install --upgrade pip && \
     rm /requirements.txt
 
 # Cache Models
+COPY builder/juggernautXL_version6Rundiffusion.safetensors /juggernautXL_version6Rundiffusion.safetensors
 COPY builder/cache_models.py /cache_models.py
 RUN python3.11 /cache_models.py && \
     rm /cache_models.py

@@ -37,12 +37,9 @@ class ModelHandler:
         self.load_models()
 
     def load_base(self):
-        vae = AutoencoderKL.from_pretrained(
-            "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
-        base_pipe = StableDiffusionXLPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0", vae=vae,
-            torch_dtype=torch.float16, variant="fp16", use_safetensors=True, add_watermarker=False
-        )
+        base_pipe = StableDiffusionXLPipeline.from_single_file(
+            '/juggernautXL_version6Rundiffusion.safetensors',
+            torch_dtype=torch.float16, variant="fp16", )
         base_pipe = base_pipe.to("cuda", silence_dtype_warnings=True)
         base_pipe.enable_xformers_memory_efficient_attention()
         return base_pipe
