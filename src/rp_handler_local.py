@@ -20,6 +20,7 @@ from diffusers import (
 from diffusers import StableDiffusionLatentUpscalePipeline
 from diffusers import StableDiffusionXLPipeline
 from diffusers.configuration_utils import FrozenDict
+from transformers.models.clip import CLIPTextModel, CLIPTokenizer
 
 
 class ModelHandler:
@@ -62,15 +63,73 @@ def make_scheduler(name: str, config: FrozenDict) -> object:
     }[name]
 
 
+def tokenize_prompts(pos_prompt: str, neg_prompt: str,
+                     tokenizer: CLIPTokenizer,
+                     text_encoder: CLIPTextModel) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    max_encoder_length = tokenizer.model_max_length
+
+    input_ids = tokenizer(pos_prompt, return_tensors="pt").input_ids
+    input_ids = input_ids.to("cuda")
+
+    # positive and negative embeddings must have the same shape
+    negative_ids = tokenizer(neg_prompt, truncation=False, padding="max_length", max_length=input_ids.shape[-1],
+                             return_tensors="pt").input_ids
+    negative_ids = negative_ids.to("cuda")
+
+    concat_pos_embeds = []
+    concat_pooled_pos_embeds = []
+    concat_neg_embeds = []
+    concat_pooled_neg_embeds = []
+    for i in range(0, input_ids.shape[-1], max_encoder_length):
+        pos_embeds = text_encoder(input_ids[:, i: i + max_encoder_length], output_hidden_states=True)
+        pos_embeds, pooled_pos_embeds = pos_embeds.hidden_states[-2], pos_embeds[0]
+        concat_pos_embeds.append(pos_embeds)
+        concat_pooled_pos_embeds.append(pooled_pos_embeds)
+        neg_embeds = text_encoder(negative_ids[:, i: i + max_encoder_length], output_hidden_states=True)
+        neg_embeds, pooled_neg_embeds = neg_embeds.hidden_states[-2], neg_embeds[0]
+        concat_neg_embeds.append(neg_embeds)
+        concat_pooled_neg_embeds.append(pooled_neg_embeds)
+
+    prompt_embeds = torch.cat(concat_pos_embeds, dim=1)
+    pooled_prompt_embeds = torch.cat(concat_pooled_pos_embeds, dim=1 if concat_pooled_pos_embeds[0].dim() == 3 else 0)
+    negative_prompt_embeds = torch.cat(concat_neg_embeds, dim=1)
+    pooled_negative_prompt_embeds = torch.cat(concat_pooled_neg_embeds,
+                                              dim=1 if concat_pooled_neg_embeds[0].dim() == 3 else 0)
+
+    return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, pooled_negative_prompt_embeds
+
+
 @torch.inference_mode()
 def generate_image(pos_prompt: str, neg_prompt: str, seed: int, model_handler: ModelHandler,
                    resolution: Tuple[int, int] = (1024, 1024)) -> Image:
     generator = torch.Generator("cuda").manual_seed(seed)
 
+    pos_embeds, neg_embeds, _, _ = tokenize_prompts(pos_prompt, neg_prompt, model_handler.base.tokenizer,
+                                                    model_handler.base.text_encoder)
+    pos_embeds_2, neg_embeds_2, pooled_pos_embeds, pooled_neg_embeds = tokenize_prompts(pos_prompt, neg_prompt,
+                                                                                        model_handler.base.tokenizer_2,
+                                                                                        model_handler.base.text_encoder_2)
+
+    pos_embeds = torch.concat([pos_embeds, pos_embeds_2], dim=-1)
+    neg_embeds = torch.concat([neg_embeds, neg_embeds_2], dim=-1)
+
     # Generate latent image using pipe
+    # output = model_handler.base(
+    #     prompt=pos_prompt,
+    #     negative_prompt=neg_prompt,
+    #     height=resolution[0],
+    #     width=resolution[1],
+    #     num_inference_steps=50,
+    #     guidance_scale=9,
+    #     denoising_end=None,
+    #     num_images_per_prompt=1,
+    #     generator=generator,
+    # ).images[0]
     output = model_handler.base(
-        prompt=pos_prompt,
-        negative_prompt=neg_prompt,
+        prompt_embeds=pos_embeds,
+        negative_prompt_embeds=neg_embeds,
+        pooled_prompt_embeds=pooled_pos_embeds[0].unsqueeze(0),
+        negative_pooled_prompt_embeds=pooled_neg_embeds[0].unsqueeze(0),
         height=resolution[0],
         width=resolution[1],
         num_inference_steps=50,
