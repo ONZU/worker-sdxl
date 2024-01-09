@@ -18,7 +18,7 @@ from diffusers import (
     DPMSolverMultistepScheduler,
 )
 from diffusers import StableDiffusionLatentUpscalePipeline
-from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline, AutoencoderKL
+from diffusers import StableDiffusionXLPipeline
 from diffusers.configuration_utils import FrozenDict
 
 
@@ -33,30 +33,16 @@ class ModelHandler:
     def load_base() -> StableDiffusionXLPipeline:
         base_pipe = StableDiffusionXLPipeline.from_single_file(
             '../builder/juggernautXL_version6Rundiffusion.safetensors',
-            torch_dtype=torch.float16, variant="fp16", )
+            # torch_dtype=torch.float16, variant="fp16",
+        )
         base_pipe = base_pipe.to("cuda", silence_dtype_warnings=True)
         base_pipe.enable_xformers_memory_efficient_attention()
         return base_pipe
 
     @staticmethod
-    def load_refiner() -> StableDiffusionXLImg2ImgPipeline:
-        vae = AutoencoderKL.from_pretrained(
-            "madebyollin/sdxl-vae-fp16-fix",
-            torch_dtype=torch.float16, local_files_only=True
-        )
-        refiner_pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-refiner-1.0", vae=vae,
-            torch_dtype=torch.float16, variant="fp16",
-            use_safetensors=True, add_watermarker=False, local_files_only=True
-        )
-        refiner_pipe = refiner_pipe.to("cuda", silence_dtype_warnings=True)
-        refiner_pipe.enable_xformers_memory_efficient_attention()
-        return refiner_pipe
-
-    @staticmethod
     def load_upscaler() -> StableDiffusionLatentUpscalePipeline:
         upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler",
-                                                                        torch_dtype=torch.float16,
+                                                                        # torch_dtype=torch.float16,
                                                                         use_safetensors=True, local_files_only=True)
         upscaler = upscaler.to("cuda", silence_dtype_warnings=True)
         upscaler.enable_xformers_memory_efficient_attention()
@@ -64,7 +50,6 @@ class ModelHandler:
 
     def load_models(self) -> None:
         self.base = self.load_base()
-        self.refiner = self.load_refiner()
         self.upscaler = self.load_upscaler()
 
 
@@ -84,37 +69,26 @@ def generate_image(pos_prompt: str, neg_prompt: str, seed: int, model_handler: M
     generator = torch.Generator("cuda").manual_seed(seed)
 
     # Generate latent image using pipe
-    image = model_handler.base(
+    output = model_handler.base(
         prompt=pos_prompt,
         negative_prompt=neg_prompt,
         height=resolution[0],
         width=resolution[1],
-        num_inference_steps=25,
-        guidance_scale=7.5,
-        denoising_end=None,
-        output_type="latent",
-        num_images_per_prompt=1,
-        generator=generator
-    ).images
-
-    output = model_handler.refiner(
-        prompt=pos_prompt,
-        negative_prompt=neg_prompt,
         num_inference_steps=50,
-        strength=0.3,
-        image=image,
+        guidance_scale=9,
+        denoising_end=None,
         num_images_per_prompt=1,
-        generator=generator
+        generator=generator,
     ).images[0]
 
-    output = model_handler.upscaler(
-        prompt=pos_prompt,
-        negative_prompt=neg_prompt,
-        image=output,
-        num_inference_steps=20,
-        guidance_scale=0.,
-        generator=generator
-    ).images[0]
+    # output = model_handler.upscaler(
+    #     prompt=pos_prompt,
+    #     negative_prompt=neg_prompt,
+    #     image=output,
+    #     num_inference_steps=20,
+    #     guidance_scale=0.,
+    #     generator=generator
+    # ).images[0]
 
     return output
 
@@ -123,7 +97,7 @@ def process_prompts(df_path: Path) -> None:
     torch.cuda.empty_cache()
     model_handler = ModelHandler()
     model_handler.base.scheduler = make_scheduler(
-        'DDIM', model_handler.base.scheduler.config)
+        'K_EULER', model_handler.base.scheduler.config)
 
     prompts_df = pd.read_csv(df_path)
     out_dir = Path('output')
