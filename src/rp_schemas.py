@@ -26,14 +26,9 @@ INPUT_SCHEMA = {
     'scheduler': {
         'type': str,
         'required': False,
-        'default': 'DDIM'
+        'default': 'K_EULER'
     },
     'num_inference_steps': {
-        'type': int,
-        'required': False,
-        'default': 25
-    },
-    'refiner_inference_steps': {
         'type': int,
         'required': False,
         'default': 50
@@ -46,7 +41,7 @@ INPUT_SCHEMA = {
     'guidance_scale': {
         'type': float,
         'required': False,
-        'default': 7.5
+        'default': 9.
     },
     'upscaler_guidance_scale': {
         'type': float,

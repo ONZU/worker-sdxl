@@ -25,7 +25,6 @@ from diffusers.configuration_utils import FrozenDict
 class ModelHandler:
     def __init__(self):
         self.base = None
-        self.refiner = None
         self.upscaler = None
         self.load_models()
 

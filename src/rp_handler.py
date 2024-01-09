@@ -32,33 +32,22 @@ torch.cuda.empty_cache()
 class ModelHandler:
     def __init__(self):
         self.base = None
-        self.refiner = None
         self.upscaler = None
         self.load_models()
 
     def load_base(self):
         base_pipe = StableDiffusionXLPipeline.from_single_file(
             '/juggernautXL_version6Rundiffusion.safetensors',
-            torch_dtype=torch.float16, variant="fp16", )
+            # torch_dtype=torch.float16, variant="fp16",
+        )
         base_pipe = base_pipe.to("cuda", silence_dtype_warnings=True)
         base_pipe.enable_xformers_memory_efficient_attention()
         return base_pipe
 
-    def load_refiner(self):
-        vae = AutoencoderKL.from_pretrained(
-            "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
-        refiner_pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-refiner-1.0", vae=vae,
-            torch_dtype=torch.float16, variant="fp16", use_safetensors=True, add_watermarker=False
-        )
-        refiner_pipe = refiner_pipe.to("cuda", silence_dtype_warnings=True)
-        refiner_pipe.enable_xformers_memory_efficient_attention()
-        return refiner_pipe
-
     @staticmethod
     def load_upscaler() -> StableDiffusionLatentUpscalePipeline:
         upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler",
-                                                                        torch_dtype=torch.float16,
+                                                                        # torch_dtype=torch.float16,
                                                                         use_safetensors=True)
         upscaler = upscaler.to("cuda", silence_dtype_warnings=True)
         upscaler.enable_xformers_memory_efficient_attention()
@@ -67,11 +56,9 @@ class ModelHandler:
     def load_models(self):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_base = executor.submit(self.load_base)
-            future_refiner = executor.submit(self.load_refiner)
             future_upscaler = executor.submit(self.load_upscaler)
 
             self.base = future_base.result()
-            self.refiner = future_refiner.result()
             self.upscaler = future_upscaler.result()
 
 
@@ -136,17 +123,10 @@ def generate_image(job):
         job_input['scheduler'], MODELS.base.scheduler.config)
 
     if starting_image:  # If image_url is provided, run only the refiner pipeline
-        init_image = load_image(starting_image).convert("RGB")
-        output = MODELS.refiner(
-            prompt=job_input['prompt'],
-            num_inference_steps=job_input['refiner_inference_steps'],
-            strength=job_input['strength'],
-            image=init_image,
-            generator=generator
-        ).images
+        output = load_image(starting_image).convert("RGB")
     else:
         # Generate latent image using pipe
-        image = MODELS.base(
+        output = MODELS.base(
             prompt=job_input['prompt'],
             negative_prompt=job_input['negative_prompt'],
             height=job_input['height'],
@@ -154,25 +134,9 @@ def generate_image(job):
             num_inference_steps=job_input['num_inference_steps'],
             guidance_scale=job_input['guidance_scale'],
             denoising_end=job_input['high_noise_frac'],
-            output_type="latent",
             num_images_per_prompt=job_input['num_images'],
             generator=generator
         ).images
-
-        try:
-            output = MODELS.refiner(
-                prompt=job_input['prompt'],
-                num_inference_steps=job_input['refiner_inference_steps'],
-                strength=job_input['strength'],
-                image=image,
-                num_images_per_prompt=job_input['num_images'],
-                generator=generator
-            ).images
-        except RuntimeError as err:
-            return {
-                "error": f"RuntimeError: {err}, Stack Trace: {err.__traceback__}",
-                "refresh_worker": True
-            }
 
     output = MODELS.upscaler(
         prompt=job_input['prompt'],
